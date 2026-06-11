@@ -9,7 +9,7 @@ from io import BytesIO
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║                     API KEYS  (edit here)                       ║
 # ╚══════════════════════════════════════════════════════════════════╝
-GROQ_API_KEY   = "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"
+GROQ_API_KEY   = "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"
 TAVILY_API_KEY = "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"
 
 # ── Page config ───────────────────────────────────────────────────
@@ -397,7 +397,7 @@ def extract_pdf_text(uploaded_file) -> str:
     except Exception as e:
         return f"[PDF extraction error: {e}]"
 
-def image_to_base64(uploaded_file) -> tuple[str, str]:
+def image_to_base64(uploaded_file):
     """Convert uploaded image to base64 for vision models."""
     data   = uploaded_file.read()
     b64    = base64.b64encode(data).decode("utf-8")
@@ -407,7 +407,7 @@ def image_to_base64(uploaded_file) -> tuple[str, str]:
               "gif": "image/gif"}.get(suffix, "image/jpeg")
     return b64, mime
 
-def do_web_search(query: str) -> tuple[str, list]:
+def do_web_search(query: str):
     try:
         client = TavilyClient(api_key=TAVILY_API_KEY)
         result = client.search(query=query, max_results=4)
@@ -427,15 +427,40 @@ def needs_search(msg: str) -> bool:
 
 def get_followups(history: list, client) -> list:
     try:
-        ctx = "\n".join([f"{m['role']}: {m['content'][:150]}" for m in history[-4:]])
-        r   = client.chat.completions.create(
+        ctx = "\n".join([
+            f"{str(m.get('role',''))}: {str(m.get('content',''))[:150]}"
+            for m in (history[-4:] if isinstance(history, list) else [])
+        ])
+        r = client.chat.completions.create(
             model="llama-3.1-8b-instant",
-            messages=[{"role":"user","content":f"Conversation:\n{ctx}\n\nSuggest 3 short follow-up questions. JSON array only."}],
-            max_tokens=120, temperature=0.8,
+            messages=[{"role": "user", "content": (
+                f"Based on this conversation:\n{ctx}\n\n"
+                "List exactly 3 follow-up questions as a JSON array.\n"
+                "FORMAT: [\"question 1\", \"question 2\", \"question 3\"]\n"
+                "Rules: plain strings only, no nested objects, no extra text."
+            )}],
+            max_tokens=200, temperature=0.6,
         )
-        raw = re.sub(r"```json|```","", r.choices[0].message.content).strip()
-        return json.loads(raw)
-    except:
+        raw = r.choices[0].message.content or ""
+        raw = re.sub(r"```[a-z]*", "", raw).strip()
+        # Extract JSON array from response
+        match = re.search(r'\[.*?\]', raw, re.DOTALL)
+        if not match:
+            return []
+        parsed = json.loads(match.group())
+        result = []
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, str):
+                    s = item.strip()
+                    if s:
+                        result.append(s)
+                elif isinstance(item, (list, tuple)) and item:
+                    result.append(str(item[0]).strip())
+                elif isinstance(item, dict) and item:
+                    result.append(str(next(iter(item.values()))).strip())
+        return [q for q in result if isinstance(q, str) and len(q) > 3][:3]
+    except Exception:
         return []
 
 def auto_title(first_msg: str, client) -> str:
@@ -476,21 +501,25 @@ def get_response(user_msg, pdf_text="", img_b64="", img_mime=""):
     if web_ctx:
         system += f"\n\nLive web context:\n{web_ctx}"
 
+    # Build history — exclude the very last message (current user msg)
+    # because we append it below with image data if needed
+    past_msgs = msgs()[:-1][-19:]  # up to 19 previous messages
     history = [{"role":"system","content":system}]
-    for m in msgs()[-20:]:
+    for m in past_msgs:
         history.append({"role": m["role"], "content": m["content"]})
 
-    # Vision model for images
+    # Force vision model when image is present
     model = st.session_state.model
     if img_b64:
         if "scout" not in model and "maverick" not in model:
             model = "meta-llama/llama-4-scout-17b-16e-instruct"
-        history.append({"role":"user","content":[
-            {"type":"image_url","image_url":{"url":f"data:{img_mime};base64,{img_b64}"}},
-            {"type":"text","text": user_msg or "Describe this image in detail."},
+        # Append current user message WITH image as multipart content
+        history.append({"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:{img_mime};base64,{img_b64}"}},
+            {"type": "text",      "text": user_msg or "Please describe and analyze this image in detail."},
         ]})
     else:
-        history.append({"role":"user","content":user_msg})
+        history.append({"role": "user", "content": user_msg})
 
     stream = client.chat.completions.create(
         model=model, messages=history,
@@ -630,124 +659,192 @@ if not messages:
     st.markdown('</div></div>', unsafe_allow_html=True)
 
 # ── Render messages ────────────────────────────────────────────
-st.markdown('<div class="chat-area">', unsafe_allow_html=True)
 for idx, msg in enumerate(messages):
     ts = msg.get("time", "")
+    content_text = str(msg.get("content", ""))
+
     if msg["role"] == "user":
-        attach_html = ""
-        if msg.get("has_pdf"):
-            attach_html = f'<div class="attach-preview">📄 {esc(msg.get("filename","PDF"))}</div>'
-        if msg.get("has_img"):
-            attach_html = f'<div class="attach-preview">🖼 {esc(msg.get("filename","Image"))}</div>'
-        st.markdown(f"""
-        <div class="bubble-wrap-user">
-            <div>
-                {attach_html}
-                <div class="bubble-user">{esc(msg["content"])}</div>
-                <div class="bubble-meta-user">{ts}</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        with st.chat_message("user"):
+            # Show attachment badge if present
+            if msg.get("has_pdf") or msg.get("has_img"):
+                fname = msg.get("filename", "File")
+                icon  = "📄" if msg.get("has_pdf") else "🖼"
+                st.markdown(
+                    f'<div style="background:rgba(124,58,237,0.15);border:1px solid ' +
+                    'rgba(124,58,237,0.3);border-radius:8px;padding:5px 10px;' +
+                    f'font-size:0.8rem;color:#c4b5fd;margin-bottom:6px;">{icon} {esc(fname)}</div>',
+                    unsafe_allow_html=True
+                )
+            # st.markdown with no unsafe_allow_html — safest rendering
+            st.markdown(content_text)
+            if ts:
+                st.caption(ts)
+
     else:
-        badges_html = '<div class="badges">'
-        if msg.get("searched"):
-            badges_html += '<span class="badge badge-web">🌐 Web</span>'
-        if msg.get("has_pdf"):
-            badges_html += '<span class="badge badge-pdf">📄 PDF</span>'
-        if msg.get("has_img"):
-            badges_html += '<span class="badge badge-img">🖼 Image</span>'
-        if msg.get("persona","default") != "default":
-            pp = PERSONAS.get(msg["persona"], {})
-            badges_html += f'<span class="badge badge-persona">{pp.get("icon","")} {pp.get("name","")}</span>'
-        m_label = MODELS.get(msg.get("model",""), msg.get("model","")).split("  ")[0]
-        badges_html += f'<span class="badge badge-model">⚡ {esc(m_label)}</span>'
-        badges_html += '</div>'
+        with st.chat_message("assistant"):
+            # Build badge row using safe inline styles only
+            badge_parts = []
+            if msg.get("searched"):
+                badge_parts.append('<span style="background:rgba(20,83,45,0.5);color:#86efac;border:1px solid rgba(134,239,172,0.2);font-size:0.68rem;font-weight:600;padding:2px 8px;border-radius:20px;">🌐 Web</span>')
+            if msg.get("has_pdf"):
+                badge_parts.append('<span style="background:rgba(124,45,18,0.5);color:#fb923c;border:1px solid rgba(251,146,60,0.2);font-size:0.68rem;font-weight:600;padding:2px 8px;border-radius:20px;">📄 PDF</span>')
+            if msg.get("has_img"):
+                badge_parts.append('<span style="background:rgba(6,78,59,0.5);color:#6ee7b7;border:1px solid rgba(110,231,183,0.2);font-size:0.68rem;font-weight:600;padding:2px 8px;border-radius:20px;">🖼 Image</span>')
+            if msg.get("persona", "default") != "default":
+                pp = PERSONAS.get(msg.get("persona","default"), {})
+                pname = esc(str(pp.get("name","")))
+                picon = str(pp.get("icon",""))
+                badge_parts.append(f'<span style="background:rgba(69,26,3,0.5);color:#fcd34d;border:1px solid rgba(252,211,77,0.2);font-size:0.68rem;font-weight:600;padding:2px 8px;border-radius:20px;">{picon} {pname}</span>')
+            m_label = MODELS.get(msg.get("model",""), msg.get("model","")).split("  ")[0]
+            badge_parts.append(f'<span style="background:rgba(30,27,75,0.5);color:#a5b4fc;border:1px solid rgba(165,180,252,0.2);font-size:0.68rem;font-weight:600;padding:2px 8px;border-radius:20px;">⚡ {esc(str(m_label))}</span>')
 
-        st.markdown(f"""
-        <div class="bubble-wrap-bot">
-            <div class="bot-avatar">✦</div>
-            <div style="max-width:80%">
-                {badges_html}
-                <div class="bubble-bot">
-        """, unsafe_allow_html=True)
-        st.markdown(msg["content"])
-        st.markdown(f"""
-                </div>
-                <div class="bubble-meta-bot">{ts} · {msg.get('elapsed','')}{('s' if msg.get('elapsed') else '')} · ~{msg.get('tokens',0)} tokens</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+            if badge_parts:
+                st.markdown(
+                    '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px;">' +
+                    " ".join(badge_parts) + '</div>',
+                    unsafe_allow_html=True
+                )
 
-        # Reactions
-        fk = f"fb_{idx}"
-        cfb = st.session_state.feedback.get(fk)
-        rc1, rc2, rc3 = st.columns([1, 1, 10])
-        with rc1:
-            if st.button("👍" + (" ✓" if cfb=="up" else ""), key=f"u{idx}"):
-                st.session_state.feedback[fk] = "up"; st.rerun()
-        with rc2:
-            if st.button("👎" + (" ✓" if cfb=="down" else ""), key=f"d{idx}"):
-                st.session_state.feedback[fk] = "down"; st.rerun()
+            # Bot reply — plain markdown, no unsafe_allow_html
+            st.markdown(content_text)
 
-        # Sources expander
-        if msg.get("sources"):
-            with st.expander("🔗 View sources"):
-                for s in msg["sources"]:
-                    st.markdown(f"- [{s['title']}]({s['url']})")
+            elapsed     = msg.get("elapsed", "")
+            elapsed_str = f"{elapsed}s · " if elapsed else ""
+            st.caption(f"{ts}  ·  {elapsed_str}~{msg.get('tokens', 0)} tokens")
 
-st.markdown('</div>', unsafe_allow_html=True)  # chat-area
+            # Reaction buttons
+            fk  = f"fb_{idx}"
+            cfb = st.session_state.feedback.get(fk)
+            rc1, rc2, rc3 = st.columns([1, 1, 10])
+            with rc1:
+                if st.button("👍" + (" ✓" if cfb == "up" else ""), key=f"u{idx}"):
+                    st.session_state.feedback[fk] = "up"; st.rerun()
+            with rc2:
+                if st.button("👎" + (" ✓" if cfb == "down" else ""), key=f"d{idx}"):
+                    st.session_state.feedback[fk] = "down"; st.rerun()
 
-# ── Follow-up chips ────────────────────────────────────────────
-if st.session_state.followups and messages:
-    st.markdown('<div class="fu-wrap"><div class="fu-label">💡 You might ask:</div></div>', unsafe_allow_html=True)
-    fu_cols = st.columns(len(st.session_state.followups))
-    for i, q in enumerate(st.session_state.followups):
+            # Sources
+            if msg.get("sources"):
+                with st.expander("🔗 View sources"):
+                    for s in msg.get("sources", []):
+                        title = str(s.get("title",""))
+                        url   = str(s.get("url",""))
+                        if url:
+                            st.markdown(f"- [{title}]({url})")
+
+# ── Follow-up chips ──────────────────────────────────────────────
+try:
+    raw_fu = st.session_state.get("followups", []) or []
+    clean_followups = []
+    for q in raw_fu:
+        qs = str(q).strip() if q else ""
+        if qs and len(qs) > 3:
+            clean_followups.append(qs)
+    clean_followups = clean_followups[:3]
+except Exception:
+    clean_followups = []
+
+if clean_followups and messages:
+    st.caption("💡 You might ask:")
+    fu_cols = st.columns(len(clean_followups))
+    for i, q in enumerate(clean_followups):
         with fu_cols[i]:
-            if st.button(q, key=f"fu{i}", use_container_width=True):
+            btn_label = q[:60] + "…" if len(q) > 60 else q
+            if st.button(btn_label, key=f"fu_{i}", use_container_width=True):
                 st.session_state["_inject"] = q
-                st.session_state.followups = []
+                st.session_state["followups"] = []
                 st.rerun()
 
 st.markdown("<hr class='chat-divider'>", unsafe_allow_html=True)
 
-# ── File upload strip ──────────────────────────────────────────
-with st.expander("📎 Attach file  ( PDF or Image )", expanded=False):
+# ── File uploaders + Send button
+# NOTE: base64/pdf text are stored in session_state BEFORE rerun
+# because file handles become invalid after st.rerun()
+uploaded_pdf = None
+uploaded_img = None
+
+with st.expander("📎  Attach file  (📄 PDF  or  🖼 Image)", expanded=False):
     col_pdf, col_img = st.columns(2)
     with col_pdf:
         st.markdown("**📄 Upload PDF**")
         uploaded_pdf = st.file_uploader("", type=["pdf"], key="pdf_up", label_visibility="collapsed")
+        if uploaded_pdf:
+            st.success(f"✓ {uploaded_pdf.name} ready")
     with col_img:
         st.markdown("**🖼 Upload Image**")
         uploaded_img = st.file_uploader("", type=["png","jpg","jpeg","webp","gif"], key="img_up", label_visibility="collapsed")
         if uploaded_img:
             try:
-                img = Image.open(uploaded_img)
+                img_preview = Image.open(uploaded_img)
                 uploaded_img.seek(0)
-                st.image(img, width=180)
+                st.image(img_preview, width=220)
+                st.success(f"✓ {uploaded_img.name} ready — add a question and click Send")
             except:
                 pass
 
-# ── Chat input ─────────────────────────────────────────────────
-user_input = st.chat_input("Ask me anything…  (or attach a PDF / image above)")
+    if uploaded_pdf or uploaded_img:
+        attached_file = uploaded_pdf or uploaded_img
+        att_q = st.text_input(
+            "", key="att_question",
+            placeholder="Ask something about this file… (leave blank to auto-describe)",
+            label_visibility="collapsed"
+        )
+        send_col, _ = st.columns([1, 4])
+        with send_col:
+            if st.button("➤ Send to AI", key="att_send", use_container_width=True, type="primary"):
+                # ★ Convert files to bytes/base64 RIGHT NOW before rerun kills the file handles
+                if att_q.strip():
+                    prompt = att_q.strip()
+                elif uploaded_img:
+                    prompt = "Please describe and analyze this image in detail."
+                else:
+                    prompt = "Please summarize and explain the key points of this PDF."
+
+                if uploaded_pdf:
+                    pdf_bytes_text = extract_pdf_text(uploaded_pdf)
+                    st.session_state["_att_pdf_text"] = pdf_bytes_text
+                    st.session_state["_att_pdf_name"] = uploaded_pdf.name
+
+                if uploaded_img:
+                    b64, mime = image_to_base64(uploaded_img)
+                    st.session_state["_att_img_b64"]  = b64
+                    st.session_state["_att_img_mime"] = mime
+                    st.session_state["_att_img_name"] = uploaded_img.name
+
+                st.session_state["_inject"] = prompt
+                st.rerun()
+
+# ── Chat input
+user_input = st.chat_input("Ask me anything…")
 
 if "_inject" in st.session_state:
     user_input = st.session_state.pop("_inject")
 
+# Pull pre-encoded attachment data stored before rerun
+pdf_text  = st.session_state.pop("_att_pdf_text", "")
+pdf_fname = st.session_state.pop("_att_pdf_name", "")
+img_b64_s = st.session_state.pop("_att_img_b64",  "")
+img_mime_s= st.session_state.pop("_att_img_mime", "")
+img_fname = st.session_state.pop("_att_img_name", "")
+
 if user_input:
     now = datetime.now().strftime("%H:%M")
-    pdf_text = img_b64 = img_mime = filename = ""
-    has_pdf = has_img = False
+    has_pdf = bool(pdf_text)
+    has_img = bool(img_b64_s)
+    filename = pdf_fname or img_fname or ""
 
-    if uploaded_pdf:
+    # Also handle plain file upload without the Send button (normal chat)
+    if uploaded_pdf and not pdf_text:
         with st.spinner("📄 Reading PDF…"):
             pdf_text = extract_pdf_text(uploaded_pdf)
         has_pdf  = True
         filename = uploaded_pdf.name
 
-    if uploaded_img:
-        img_b64, img_mime = image_to_base64(uploaded_img)
+    if uploaded_img and not img_b64_s:
+        img_b64_s, img_mime_s = image_to_base64(uploaded_img)
         has_img  = True
         filename = uploaded_img.name
+
 
     # Save user message
     user_entry = {
@@ -770,23 +867,23 @@ if user_input:
 
     try:
         stream, used_search, sources, groq_client, used_model = get_response(
-            user_input, pdf_text, img_b64, img_mime
+            user_input, pdf_text, img_b64_s, img_mime_s
         )
 
-        placeholder = st.empty()
-        full_reply  = ""
+        full_reply = ""
         t0 = time.time()
 
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
-            full_reply += delta
-            placeholder.markdown(full_reply + "▌")
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                full_reply += delta
+                placeholder.markdown(full_reply + "▌")
+            placeholder.markdown(full_reply)
 
         elapsed = round(time.time() - t0, 1)
         estimated_tokens = len(full_reply) // 4
         st.session_state.total_tokens += estimated_tokens
-
-        placeholder.markdown(full_reply)
 
         m = msgs()
         m.append({
