@@ -1,4 +1,14 @@
 import streamlit as st
+import os
+
+# Load .env file for local development (no effect on Render —
+# Render injects env vars directly, dotenv is just a no-op there)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from groq import Groq
 from tavily import TavilyClient
 import html, json, time, re, base64
@@ -9,8 +19,8 @@ from io import BytesIO
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║                     API KEYS  (edit here)                       ║
 # ╚══════════════════════════════════════════════════════════════════╝
-GROQ_API_KEY   = "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"
-TAVILY_API_KEY = "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"
+GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "")
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
 # ── Page config ───────────────────────────────────────────────────
 st.set_page_config(page_title="SmartChat AI", page_icon="✦", layout="wide")
@@ -384,7 +394,10 @@ def extract_pdf_text(uploaded_file) -> str:
     """Extract text from PDF using PyMuPDF."""
     try:
         import fitz
+        uploaded_file.seek(0)  # ★ always rewind before reading
         data = uploaded_file.read()
+        if not data:
+            return "[PDF extraction error: file stream was empty — try re-uploading]"
         doc  = fitz.open(stream=data, filetype="pdf")
         pages = []
         for i, page in enumerate(doc):
@@ -399,7 +412,10 @@ def extract_pdf_text(uploaded_file) -> str:
 
 def image_to_base64(uploaded_file):
     """Convert uploaded image to base64 for vision models."""
-    data   = uploaded_file.read()
+    uploaded_file.seek(0)  # ★ always rewind — prior reads (e.g. st.image preview) move the pointer
+    data = uploaded_file.read()
+    if not data:
+        return "", ""
     b64    = base64.b64encode(data).decode("utf-8")
     suffix = uploaded_file.name.split(".")[-1].lower()
     mime   = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
@@ -489,7 +505,10 @@ def get_response(user_msg, pdf_text="", img_b64="", img_mime=""):
     client = Groq(api_key=GROQ_API_KEY)
     web_ctx, sources, used_search = "", [], False
 
-    if st.session_state.web_search and needs_search(user_msg):
+    # Skip web search when a file is attached — the user wants the
+    # file analyzed, not a web lookup of their question text.
+    has_attachment = bool(pdf_text) or bool(img_b64)
+    if st.session_state.web_search and needs_search(user_msg) and not has_attachment:
         with st.spinner("🌐 Searching the web…"):
             web_ctx, sources = do_web_search(user_msg)
         used_search = True
@@ -497,7 +516,12 @@ def get_response(user_msg, pdf_text="", img_b64="", img_mime=""):
     base_prompt = st.session_state.custom_sys.strip() or PERSONAS[st.session_state.persona]["prompt"]
     system = base_prompt
     if pdf_text:
-        system += f"\n\nThe user has uploaded a PDF. Its content:\n{pdf_text}"
+        system += (
+            "\n\nIMPORTANT: The user has uploaded a PDF document. "
+            "You MUST answer using ONLY the information in this document below. "
+            "Do not say you cannot access the file — the full text is provided here:\n\n"
+            f"--- BEGIN PDF CONTENT ---\n{pdf_text}\n--- END PDF CONTENT ---"
+        )
     if web_ctx:
         system += f"\n\nLive web context:\n{web_ctx}"
 
@@ -644,6 +668,18 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+
+# ── Startup check: warn immediately if key is missing ─────────
+if not GROQ_API_KEY or not GROQ_API_KEY.strip():
+    st.error(
+        "⚠️ **GROQ_API_KEY is not set.**\n\n"
+        "**On Render:** Go to your service → Environment tab → add a variable named "
+        "exactly `GROQ_API_KEY` with your key (starts with `gsk_`), no quotes, no spaces. Then redeploy.\n\n"
+        "**Locally:** run `export GROQ_API_KEY=gsk_yourkey` (Mac/Linux) or "
+        "`set GROQ_API_KEY=gsk_yourkey` (Windows) before `streamlit run app.py`."
+    )
+    st.stop()
+
 messages = msgs()
 
 # ── Welcome screen ─────────────────────────────────────────────
@@ -782,7 +818,10 @@ with st.expander("📎  Attach file  (📄 PDF  or  🖼 Image)", expanded=False
             except:
                 pass
 
-    if uploaded_pdf or uploaded_img:
+    if uploaded_pdf and uploaded_img:
+        st.warning("⚠️ Please send only ONE file at a time (PDF or Image, not both). Remove one to continue.")
+
+    elif uploaded_pdf or uploaded_img:
         attached_file = uploaded_pdf or uploaded_img
         att_q = st.text_input(
             "", key="att_question",
@@ -802,11 +841,20 @@ with st.expander("📎  Attach file  (📄 PDF  or  🖼 Image)", expanded=False
 
                 if uploaded_pdf:
                     pdf_bytes_text = extract_pdf_text(uploaded_pdf)
+                    if pdf_bytes_text.startswith("[PDF extraction error"):
+                        st.error(f"❌ PDF extraction failed: {pdf_bytes_text}")
+                        st.stop()
+                    if not pdf_bytes_text.strip():
+                        st.error("❌ No text could be extracted from this PDF (it may be a scanned/image-only PDF).")
+                        st.stop()
                     st.session_state["_att_pdf_text"] = pdf_bytes_text
                     st.session_state["_att_pdf_name"] = uploaded_pdf.name
 
-                if uploaded_img:
+                elif uploaded_img:
                     b64, mime = image_to_base64(uploaded_img)
+                    if not b64:
+                        st.error("❌ Could not read the image file. Try a different file.")
+                        st.stop()
                     st.session_state["_att_img_b64"]  = b64
                     st.session_state["_att_img_mime"] = mime
                     st.session_state["_att_img_name"] = uploaded_img.name
@@ -903,8 +951,14 @@ if user_input:
 
     except Exception as e:
         err = str(e)
-        if "auth" in err.lower() or "api_key" in err.lower():
-            st.error("❌ Invalid API key — check GROQ_API_KEY at the top of app.py")
+        if "auth" in err.lower() or "api_key" in err.lower() or "401" in err:
+            st.error(
+                "❌ Invalid or missing Groq API key.\n\n"
+                "**If deployed on Render:** go to your service → Environment tab → "
+                "check GROQ_API_KEY has no extra spaces or quotes around the value, then redeploy.\n\n"
+                "**If running locally:** set the GROQ_API_KEY environment variable before running streamlit.\n\n"
+                f"Raw error: {err}"
+            )
         elif "rate" in err.lower():
             st.error("⚠️ Rate limit hit — wait a moment and retry")
         elif "model" in err.lower():
