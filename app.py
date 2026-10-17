@@ -341,10 +341,9 @@ PERSONAS = {
 }
 
 MODELS = {
-    "llama-3.3-70b-versatile":                        "LLaMA 3.3 70B  ★ Best",
-    "llama-3.1-8b-instant":                           "LLaMA 3.1 8B  ⚡ Fast",
+    "meta-llama/llama-4-maverick-17b-128e-instruct":  "LLaMA 4 Maverick  ★ Best",
     "meta-llama/llama-4-scout-17b-16e-instruct":      "LLaMA 4 Scout  👁 Vision",
-    "meta-llama/llama-4-maverick-17b-128e-instruct":  "LLaMA 4 Maverick",
+    "llama-3.1-8b-instant":                           "LLaMA 3.1 8B  ⚡ Fast",
     "qwen/qwen-3-32b":                                "Qwen 3 32B",
     "mixtral-8x7b-32768":                             "Mixtral 8x7B",
 }
@@ -371,7 +370,7 @@ def init_state():
         "followups":      [],
         "persona":        "default",
         "custom_sys":     "",
-        "model":          "llama-3.3-70b-versatile",
+        "model":          "meta-llama/llama-4-maverick-17b-128e-instruct",
         "temperature":    0.7,
         "web_search":     True,
         "show_followups": True,
@@ -580,7 +579,7 @@ with st.sidebar:
     st.markdown('<div class="sb-sec">Model</div>', unsafe_allow_html=True)
     st.session_state.model = st.selectbox(
         "", list(MODELS.keys()), format_func=lambda x: MODELS[x],
-        index=list(MODELS.keys()).index(st.session_state.model),
+        index=list(MODELS.keys()).index(st.session_state.model) if st.session_state.model in MODELS else 0,
         label_visibility="collapsed"
     )
 
