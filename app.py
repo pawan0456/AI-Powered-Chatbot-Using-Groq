@@ -341,10 +341,10 @@ PERSONAS = {
 }
 
 MODELS = {
-    "llama-3.3-70b-versatile":  "LLaMA 3.3 70B  ★ Best",
-    "llama-3.1-8b-instant":     "LLaMA 3.1 8B  ⚡ Fast",
-    "qwen/qwen3.8-27b":         "Qwen 3 27B",
-    "mixtral-8x7b-32768":       "Mixtral 8x7B",
+    "llama-3.1-8b-instant":     "LLaMA 3.1 8B  ★ Best",
+    "llama-3.3-70b-versatile":  "LLaMA 3.3 70B  🔥 Powerful",
+    "openai/gpt-oss-20b":       "GPT OSS 20B",
+    "openai/gpt-oss-120b":      "GPT OSS 120B",
 }
 
 STARTERS = [
@@ -369,7 +369,7 @@ def init_state():
         "followups":      [],
         "persona":        "default",
         "custom_sys":     "",
-        "model":          "llama-3.3-70b-versatile",
+        "model":          "llama-3.1-8b-instant",
         "temperature":    0.7,
         "web_search":     True,
         "show_followups": True,
