@@ -341,11 +341,10 @@ PERSONAS = {
 }
 
 MODELS = {
-    "meta-llama/llama-4-maverick-17b-128e-instruct":  "LLaMA 4 Maverick  ★ Best",
-    "meta-llama/llama-4-scout-17b-16e-instruct":      "LLaMA 4 Scout  👁 Vision",
-    "llama-3.1-8b-instant":                           "LLaMA 3.1 8B  ⚡ Fast",
-    "qwen/qwen-3-32b":                                "Qwen 3 32B",
-    "mixtral-8x7b-32768":                             "Mixtral 8x7B",
+    "llama-3.3-70b-versatile":  "LLaMA 3.3 70B  ★ Best",
+    "llama-3.1-8b-instant":     "LLaMA 3.1 8B  ⚡ Fast",
+    "qwen/qwen3.8-27b":         "Qwen 3 27B",
+    "mixtral-8x7b-32768":       "Mixtral 8x7B",
 }
 
 STARTERS = [
@@ -370,7 +369,7 @@ def init_state():
         "followups":      [],
         "persona":        "default",
         "custom_sys":     "",
-        "model":          "meta-llama/llama-4-maverick-17b-128e-instruct",
+        "model":          "llama-3.3-70b-versatile",
         "temperature":    0.7,
         "web_search":     True,
         "show_followups": True,
